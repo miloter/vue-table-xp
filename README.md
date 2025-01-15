@@ -19,7 +19,7 @@ Este componente permite:
 
 <body>
     <div id="app"></div>
-    <script src="app.js" type="module"></script>
+    <script src="App.js" type="module"></script>
     <script type="module">
         import App from './App.js';
 
