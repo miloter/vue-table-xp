@@ -7,7 +7,7 @@
  *
  * @author miloter
  * @since 2024-05-11
- * @version 2025-01-09
+ * @version 2025-01-16
  *
  * Ordenación y filtrado: se realiza únicamente en las filas que pertenecen
  * al cuerpo de la tabla, excluyendo la fila de cabecera y las del pie.
@@ -22,11 +22,12 @@
  *      El formato será {
  *          title: '...',
  *          key: '...',
- *          showFilter: true|false
+ *          showFilter: true|[false],
+ *          checked: [true]|false
  *      }, donde title es el título descriptivo de la cabecera, key el nombre de
  *      la clave en el objeto de la fila, showFilter indica si se mostrará o no
- *      un campo de filtrado.
- *      El array headers puede ser de carga asíncrona, en otras palabras.
+ *      un campo de filtrado y checked si la columna aparecerá inicialmente.
+ *      El array headers puede ser de carga asíncrona.
  *  
  *      rows: array de objetos con los datos de las filas. Puede ser
  *      de carga asíncrona.
@@ -39,6 +40,9 @@
  *
  *      columnsMultiselect: booleano que indica si se muestra o no
  *      un cuadro de selección de columnas visibles, por defecto es true.
+ * 
+ *      columnsMultiselectMaxHeight: Un número entero que indica la altura de la vista
+ *      de columnas seleccionables, el número indica la cantidad de rem.
  *
  *      csvExport: booleano que indica si se muestra o no un botón
  *      de exportación a archivo CSV, por defecto es true.
@@ -58,6 +62,13 @@
  *
  *      selectedChanged(selectedRows): cuando se produce un cambio en las filas
  *      seleccionadas, el argumento son las filas seleccionadas.
+ * 
+ *      selectedColumnsChanged(selectedColumns): Se produce cuando cambian las
+ *      columnas seleccionadas.
+ * 
+ *      expandChanged(isOpened, row): Si se implementa el slot #extra, se emitirá
+ *      dicho evento con un indicador truthy de expandido y la fila afectada por
+ *      la expasión/contracción de la fila.
  */
 
 import TestSearch from "./requirements/test-search.js";
@@ -69,11 +80,14 @@ export default {
         rowsPerPage: { type: Number, default: 10 },
         rowsSelectPage: { type: Array, default: () => [2, 5, 10, 20, 50] },
         columnsMultiselect: { type: Boolean, default: true },
+        columnsMultiselectMaxHeight: { type: Number, default: 16 },
         csvExport: { type: Boolean, default: true },
         controlsPagination: { type: Boolean, default: true },
         multiselect: { type: Boolean, default: false }
     },
-    emits: ['filterChanged', 'paginatedChanged', 'selectedChanged'],
+    emits: ['filterChanged', 'paginatedChanged', 'selectedChanged',        
+        'selectedColumnsChanged', 'expandChanged'
+    ],
     template: /*html*/`
         <div :class="componentUid">
             <div class="top-controls">                
@@ -88,14 +102,14 @@ export default {
                     <div v-show="columnsSelectDisplayed" class="columns-multiselect-checkboxes">
                         <label class="columns-multiselect-label-main">
                             <input type="checkbox"
-                                :checked="selectedColumns.length === headers.length"
-                                @click="columnsSelecChange($event.target.checked, null)">
+                                :checked="filteredSelectedColumns.length === headers.length"
+                                @click="selectedColumnsChanged($event.target.checked, null)">
                             - Todas Visibles -
                         </label><br>                
                         <template v-for="col in headers" :key="col.key">
                             <label>
-                                <input type="checkbox" :checked="col[symColChecked]"
-                                    @click="columnsSelecChange($event.target.checked, col)">
+                                <input type="checkbox" :checked="col.checked"
+                                    @click="selectedColumnsChanged($event.target.checked, col)">
                                 {{ col.title }}
                             </label><br>
                         </template>
@@ -115,7 +129,7 @@ export default {
                             </button>
                         </th>  
                         <th v-if="$slots.extra">&nbsp;</th>                            
-                        <th v-for="(h, idx) of selectedColumns" :key="idx">                
+                        <th v-for="(h, idx) of filteredSelectedColumns" :key="idx">                
                             <div v-if="h.showFilter" class="filter-controls">
                                 <span :title="sortTitle" class="sort" @click="sortOrFilter(true, h.key)">&udarr;</span>
                                 <input type="text" class="input-filter"
@@ -133,11 +147,11 @@ export default {
                                 <input type="checkbox" :checked="r[symRowChecked]" @click="changeChecked($event.target.checked, r)">
                             </td>
                             <td v-if="$slots.extra">
-                                <a href="#" @click.prevent="expandChange(r)" style="text-decoration: none;">
+                                <a href="#" @click.prevent="expandChanged(r)" style="text-decoration: none;">
                                     {{ r[symRowExpand] ? '∨': '>' }}                                    
                                 </a>
                             </td>
-                            <template v-for="h of selectedColumns" :key="h.key">                            
+                            <template v-for="h of filteredSelectedColumns" :key="h.key">                            
                                 <td v-if="$slots[h.key]">                                
                                     <slot :name="h.key" :row="r"></slot>
                                 </td>
@@ -181,41 +195,38 @@ export default {
             paginated: [],
             // Prop derivada mutable
             currentRowsPerPage: this.rowsPerPage,            
-            selectedRows: [],
-            selectedColumns: [],
+            selectedRows: [],            
             columnsSelectDisplayed: false,
             filterSelected: false,
             // Símbolos del componente
             symRowExpand: Symbol('Indica si la fila extra está expandida'),            
-            symRowChecked: Symbol('Indica si la fila está seleccionada'),            
-            symColChecked: Symbol('Indica si una columna está visible')            
+            symRowChecked: Symbol('Indica si la fila está seleccionada')           
         }
     },
     methods: {
-        columnsSelecChange(value, col) {
-            if (col) {
-                col[this.symColChecked] = value;
-                if (value) {
-                    // Se tiene que colocar en la posición adecuada
-                    const iCol = this.headers.findIndex(h => h === col);
-                    let iCurrent = 0;
-                    for (const selCol of this.selectedColumns) {
-                        const iSelCol = this.headers.findIndex(h => h === selCol);
-                        if (iSelCol > iCol) break;
-                        iCurrent++;
-                    }
-                    // Se inserta en iCurrent
-                    this.selectedColumns.splice(iCurrent, 0, col);
-                } else {
-                    this.selectedColumns = this.selectedColumns.filter(c => c !== col);
+        /**
+         * Las columnas que tienen el atributo checked a true o las que no
+         * lo tienen se muestran inicialmente visibles
+         */
+        updateHeadersChecked() {
+            for (const col of this.headers) {
+                if (!('checked' in col)) {
+                    col.checked = true;
                 }
-            } else {
-                for (const col of this.headers) {
-                    col[this.symColChecked] = value;
-                }
-                this.selectedColumns = value ? this.headers : [];
             }
             this.updateHeaderFilters();
+            this.$emit('selectedColumnsChanged', this.filteredSelectedColumns);
+        },
+        selectedColumnsChanged(value, col) {
+            if (col) {
+                col.checked = value;
+            } else {
+                for (const col of this.headers) {
+                    col.checked = value;
+                }
+            }
+            this.updateHeaderFilters();
+            this.$emit('selectedColumnsChanged', this.filteredSelectedColumns);
         },
         clickOutside(e) {
             if (!this.columnsSelectDisplayed) return;
@@ -237,8 +248,9 @@ export default {
                 this.columnsSelectDisplayed = false;
             }
         },
-        expandChange(row) {
+        expandChanged(row) {
             row[this.symRowExpand] = !row[this.symRowExpand];
+            this.$emit('expandChanged', row[this.symRowExpand], row);
         },
         changeChecked(value, row) {
             if (row) {
@@ -294,8 +306,7 @@ export default {
                     for (const row of this.rows) {
                         let add = true;
                         for (let i = 0; i < filterKeys.length; i++) {
-                            const match = this.testSearch.eval(String(row[filterKeys[i].key]), filterKeys[i].filter);
-                            //  this.normalize(String(row[filterKeys[i].key])).indexOf(filterKeys[i].filter) >= 0;
+                            const match = this.testSearch.eval(String(row[filterKeys[i].key]), filterKeys[i].filter);                            
                             if (!match) {
                                 add = false;
                                 break;
@@ -427,34 +438,65 @@ export default {
         },
         // Devuelve la filas en una cadena con formato CSV        
         getRowsToCsv() {
+            // Nueva línea estándar en un CSV
+            const nl = '\r\n';
+            // Caracter de entrecomillado para campos que lo requieran
+            const quotes = '"';
+            const dblQuotes = quotes + quotes;
+            // Carácter separador de campos
+            const sep = ';';
             // Generamos la cadena en formato CSV            
             const sb = [];
 
             // Trabajaremos con las cabeceras
-            const hs = this.headers.filter(h => h[this.symColChecked]);
+            const hs = this.headers.filter(h => h.checked);
+
+            // Escribe el valor actual en el array
+            function writeValue(sb, value) {
+                const hasSep = value.includes(sep);
+                const hasQuotes = value.includes(quotes);
+                const hasLines = value.includes('\r') || value.includes('\n');
+
+                if (hasSep || hasQuotes || hasLines) {
+                    sb.push(quotes);
+                }
+                if (hasQuotes) {
+                    value = value.replaceAll(quotes, dblQuotes);
+                }
+                sb.push(value);
+                if (hasSep || hasQuotes || hasLines) {
+                    sb.push(quotes);
+                }
+            }
 
             // Cabeceras del CSV            
             for (let i = 0; i < hs.length; i++) {
-                sb.push('\"');
-                sb.push(hs[i].title.replaceAll("\"", "\"\""));
-                sb.push('\"');
+                const value = hs[i].title;                
+                
+                writeValue(sb, value);                                            
                 if (i < (hs.length - 1)) {
-                    sb.push(';');
+                    sb.push(sep);
                 }
             }
-            sb.push('\n');
+            if (sb.length) {
+                sb.push(nl);
+            }
 
-            // Cuerpo del CSV            
-            for (const r of this.currentRows) {
+            // Cuerpo del CSV 
+            let nRows = 0;           
+            for (const row of this.currentRows) {
                 for (let i = 0; i < hs.length; i++) {
-                    sb.push('\"');
-                    sb.push(String(r[hs[i].key] ?? '').replace("\"", "\"\""));
-                    sb.push('\"');
+                    const value = String(row[hs[i].key] ?? '');
+
+                    writeValue(sb, value);                    
                     if (i < (hs.length - 1)) {
-                        sb.push(';');
+                        sb.push(sep);
                     }
                 }
-                sb.push('\n');
+                nRows++;
+                if (nRows < this.currentRows.length) {
+                    sb.push(nl);
+                }
             }
 
             return sb.join('');
@@ -532,6 +574,8 @@ export default {
                     z-index: 1;
                     background-color: lightgray;
                     border: 1px solid black;
+                    max-height: ${this.columnsMultiselectMaxHeight}rem;
+                    overflow: auto;
                 }
 
                 .${this.componentUid} .columns-multiselect-label-main {
@@ -547,7 +591,7 @@ export default {
         },
         updateHeaderFilters() {
             this.hFilter = [];
-            for (const h of this.headers.filter(h => h[this.symColChecked])) {
+            for (const h of this.headers.filter(h => h.checked)) {
                 this.hFilter.push({
                     text: '',
                     key: h.key
@@ -563,6 +607,13 @@ export default {
         }
     },
     computed: {
+        /**
+         * Devuelve las columnas seleccionadas.
+         * @returns 
+         */
+        filteredSelectedColumns() {
+            return this.headers.filter(h => h.checked);
+        },
         /**
          * Devuelve un ID de instancia del componente único.
          */
@@ -605,9 +656,6 @@ export default {
 
             return true;
         },
-        visibleColumn(col) {
-            return this.selectedColumns.some(c => c === col)
-        },
         reDateString() {
             return /^\d{2}(?:\/|-)\d{2}(?:\/|-)\d{4}$/;
         },
@@ -637,7 +685,7 @@ export default {
          * como visibles todas las columnas.
          */
         'headers.length'() {
-            this.columnsSelecChange(true, null);
+            this.updateHeadersChecked();
         },
         // Si cambia el filtro de selección
         filterSelected() {
@@ -647,7 +695,9 @@ export default {
     created() {
         // Establece los estilos del componente
         this.setComponentStyles();
-        this.columnsSelecChange(true, null);
+        // Actualiza la propiedad de selección de cada columna
+        this.updateHeadersChecked();
+        // Fuerza la actualización de todos los elementos    
         this.change();
     },
     mounted() {
